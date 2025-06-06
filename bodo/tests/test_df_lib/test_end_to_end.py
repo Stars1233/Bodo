@@ -196,7 +196,6 @@ def test_projection(datapath):
 
     # TODO: remove copy when df.apply(axis=0) is implemented
     # TODO: remove forcing collect when copy() bug with RangeIndex(1) is fixed
-    str(bodo_df2)
     _test_equal(
         bodo_df2.copy(),
         py_df2,
@@ -884,6 +883,46 @@ def test_dataframe_copy(index_val):
     _test_equal(df1, pdf_from_bodo, sort_output=True)
 
 
+def test_dataframe_sort(datapath):
+    """Very simple test for sorting for sanity checking."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = bodo_df1.sort_values(
+        by=["D", "A"], ascending=[True, False], na_position="last"
+    )
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = py_df1.sort_values(
+        by=["D", "A"], ascending=[True, False], na_position="last"
+    )
+
+    _test_equal(
+        bodo_df2,
+        py_df2,
+        check_pandas_types=False,
+        sort_output=False,
+        reset_index=True,
+    )
+
+
+def test_series_sort(datapath):
+    """Very simple test for sorting for sanity checking."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = bodo_df1["D"]
+    bodo_df3 = bodo_df2.sort_values(ascending=False, na_position="last")
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = py_df1["D"]
+    py_df3 = py_df2.sort_values(ascending=False, na_position="last")
+
+    _test_equal(
+        bodo_df3,
+        py_df3,
+        check_pandas_types=False,
+        sort_output=False,
+        reset_index=True,
+    )
+
+
 def test_basic_groupby():
     """
     Test a simple groupby operation.
@@ -934,6 +973,23 @@ def test_projection_expression_floordiv(datapath):
 
     py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
     py_df2 = py_df1[(py_df1.A // 3) * 7 > 15]
+
+    _test_equal(
+        bodo_df2,
+        py_df2,
+        check_pandas_types=False,
+        sort_output=True,
+        reset_index=True,
+    )
+
+
+def test_series_compound_expression(datapath):
+    """Very simple test for projection expressions."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = (bodo_df1["A"] + 50) * 2 / 7
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = (py_df1["A"] + 50) * 2 / 7
 
     _test_equal(
         bodo_df2,
