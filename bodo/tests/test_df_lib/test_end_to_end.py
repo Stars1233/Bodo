@@ -9,6 +9,7 @@ import pytest
 
 import bodo
 import bodo.pandas as bd
+from bodo.pandas.utils import BodoLibFallbackWarning
 from bodo.tests.utils import _test_equal, pytest_mark_spawn_mode, temp_config_override
 
 # Various Index kinds to use in test data (assuming maximum size of 100 in input)
@@ -186,6 +187,54 @@ def test_read_parquet_series_len_shape(datapath):
     assert bodo_out.is_lazy_plan()
 
 
+def test_write_parquet(index_val):
+    """Test writing a DataFrame to parquet."""
+    df = pd.DataFrame(
+        {
+            "one": [-1.0, np.nan, 2.5, 3.0, 4.0, 6.0, 10.0],
+            "two": ["foo", "bar", "baz", "foo", "bar", "baz", "foo"],
+            "three": [True, False, True, True, True, False, False],
+            "four": [-1.0, 5.1, 2.5, 3.0, 4.0, 6.0, 11.0],
+            "five": ["foo", "bar", "baz", None, "bar", "baz", "foo"],
+        }
+    )
+    df.index = index_val[: len(df)]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "test_write.parquet")
+
+        bodo_df = bd.from_pandas(df)
+        bodo_df.to_parquet(path)
+        assert bodo_df.is_lazy_plan()
+
+        # Read back to check
+        py_out = pd.read_parquet(path)
+        _test_equal(
+            py_out,
+            df,
+            check_pandas_types=False,
+            sort_output=True,
+        )
+
+        # Already distributed DataFrame case
+        path = os.path.join(tmp, "test_write_dist.parquet")
+        bodo_df = bd.from_pandas(df)
+
+        @bodo.jit(spawn=True)
+        def f(df):
+            return df
+
+        f(bodo_df)
+        bodo_df.to_parquet(path)
+        # Read back to check
+        py_out = pd.read_parquet(path)
+        _test_equal(
+            py_out,
+            df,
+            check_pandas_types=False,
+            sort_output=True,
+        )
+
+
 def test_projection(datapath):
     """Very simple test for projection for sanity checking."""
     bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
@@ -196,7 +245,6 @@ def test_projection(datapath):
 
     # TODO: remove copy when df.apply(axis=0) is implemented
     # TODO: remove forcing collect when copy() bug with RangeIndex(1) is fixed
-    str(bodo_df2)
     _test_equal(
         bodo_df2.copy(),
         py_df2,
@@ -210,10 +258,8 @@ def test_projection(datapath):
     "file_path",
     [
         "dataframe_library/df1.parquet",
-        pytest.param("dataframe_library/df1_index.parquet", marks=pytest.mark.skip),
-        pytest.param(
-            "dataframe_library/df1_multi_index.parquet", marks=pytest.mark.skip
-        ),
+        "dataframe_library/df1_index.parquet",
+        "dataframe_library/df1_multi_index.parquet",
     ],
 )
 @pytest.mark.parametrize(
@@ -223,7 +269,7 @@ def test_filter_pushdown(datapath, file_path, op):
     """Test for filter with filter pushdown into read parquet."""
     op_str = numba.core.utils.OPERATORS_TO_BUILTINS[op]
 
-    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df1 = bd.read_parquet(datapath(file_path))
     bodo_df2 = bodo_df1[eval(f"bodo_df1.A {op_str} 20")]
 
     # Make sure bodo_df2 is unevaluated at this point.
@@ -248,12 +294,20 @@ def test_filter_pushdown(datapath, file_path, op):
 
 @pytest_mark_spawn_mode
 @pytest.mark.parametrize(
+    "file_path",
+    [
+        "dataframe_library/df1.parquet",
+        "dataframe_library/df1_index.parquet",
+        "dataframe_library/df1_multi_index.parquet",
+    ],
+)
+@pytest.mark.parametrize(
     "op", [operator.eq, operator.ne, operator.gt, operator.lt, operator.ge, operator.le]
 )
-def test_filter_distributed(datapath, op):
+def test_filter_distributed(datapath, file_path, op):
     """Very simple test for filter for sanity checking."""
-    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
-    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df1 = bd.read_parquet(datapath(file_path))
+    py_df1 = pd.read_parquet(datapath(file_path))
 
     @bodo.jit(spawn=True)
     def f(df):
@@ -275,7 +329,7 @@ def test_filter_distributed(datapath, op):
         py_df2,
         check_pandas_types=False,
         sort_output=True,
-        reset_index=True,
+        reset_index=False,
     )
 
 
@@ -310,7 +364,7 @@ def test_filter(datapath, op):
         py_df2,
         check_pandas_types=False,
         sort_output=True,
-        reset_index=True,
+        reset_index=False,
     )
 
 
@@ -884,6 +938,50 @@ def test_dataframe_copy(index_val):
     _test_equal(df1, pdf_from_bodo, sort_output=True)
 
 
+def test_dataframe_sort(datapath):
+    """Very simple test for sorting for sanity checking."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = bodo_df1.sort_values(
+        by=["D", "A"], ascending=[True, False], na_position="last"
+    )
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = py_df1.sort_values(
+        by=["D", "A"], ascending=[True, False], na_position="last"
+    )
+
+    assert bodo_df2.is_lazy_plan()
+
+    _test_equal(
+        bodo_df2,
+        py_df2,
+        check_pandas_types=False,
+        sort_output=False,
+        reset_index=True,
+    )
+
+
+def test_series_sort(datapath):
+    """Very simple test for sorting for sanity checking."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = bodo_df1["D"]
+    bodo_df3 = bodo_df2.sort_values(ascending=False, na_position="last")
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = py_df1["D"]
+    py_df3 = py_df2.sort_values(ascending=False, na_position="last")
+
+    assert bodo_df3.is_lazy_plan()
+
+    _test_equal(
+        bodo_df3,
+        py_df3,
+        check_pandas_types=False,
+        sort_output=False,
+        reset_index=True,
+    )
+
+
 def test_basic_groupby():
     """
     Test a simple groupby operation.
@@ -942,3 +1040,54 @@ def test_projection_expression_floordiv(datapath):
         sort_output=True,
         reset_index=True,
     )
+
+
+def test_series_compound_expression(datapath):
+    """Very simple test for projection expressions."""
+    bodo_df1 = bd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    bodo_df2 = (bodo_df1["A"] + 50) * 2 / 7
+
+    py_df1 = pd.read_parquet(datapath("dataframe_library/df1.parquet"))
+    py_df2 = (py_df1["A"] + 50) * 2 / 7
+
+    _test_equal(
+        bodo_df2,
+        py_df2,
+        check_pandas_types=False,
+        sort_output=True,
+        reset_index=True,
+    )
+
+
+def test_map_partitions():
+    """Simple tests for map_partition on lazy DataFrame."""
+    df = pd.DataFrame(
+        {
+            "E": [1.1, 2.2, 13.3] * 2,
+            "A": pd.array([2, 2, 3] * 2, "Int64"),
+        },
+        index=[0, 41, 2] * 2,
+    )
+
+    bodo_df = bd.from_pandas(df)
+
+    def f(df, a, b=1):
+        return df.A + df.E + a + b
+
+    bodo_df2 = bodo_df.map_partitions(f, 2, b=3)
+    py_out = df.A + df.E + 2 + 3
+
+    assert bodo_df2.is_lazy_plan()
+
+    _test_equal(bodo_df2, py_out, check_pandas_types=False)
+
+    # test fallback case for unsupported func
+    # that returns a DataFrame
+    def g(df, a, b=1):
+        return df + a + b
+
+    with pytest.warns(BodoLibFallbackWarning):
+        bodo_df2 = bodo_df.map_partitions(g, 2, b=3)
+
+    py_out = df + 2 + 3
+    _test_equal(bodo_df2, py_out, check_pandas_types=False)
